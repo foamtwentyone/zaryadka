@@ -4,8 +4,9 @@
 
 * Linux: ядро (драйвер hid-playstation / hid-sony) само публикует батарею
   в /sys/class/power_supply — читаем оттуда, ничего ставить не нужно.
-* Windows / macOS (и Linux как запасной вариант): читаем HID-отчёты
-  геймпада напрямую через библиотеку hidapi и разбираем байт статуса.
+* Windows: читаем HID-отчёты геймпада через системные функции Windows
+  (модуль winhid, без сторонних библиотек) и разбираем байт статуса.
+* macOS (и Linux как запасной вариант): то же самое через библиотеку hidapi.
 
 Раскладка отчётов взята из драйвера Linux hid-playstation.
 """
@@ -224,8 +225,12 @@ try:  # pragma: no cover - зависит от окружения
 except Exception:  # noqa: BLE001
     hid = None
 
+IS_WINDOWS = sys.platform == "win32"
+if IS_WINDOWS:  # pragma: no cover - только Windows
+    from . import winhid
+
 HID_UNAVAILABLE_MESSAGE = (
-    "Не установлена библиотека hidapi. Выполните:  pip install hidapi"
+    "Не установлена библиотека hidapi. Выполните:  pip3 install hidapi"
 )
 
 _BT_GUID = "00001124-0000-1000-8000-00805f9b34fb"
@@ -254,12 +259,18 @@ def _is_bluetooth(info: dict) -> Optional[bool]:
     return None
 
 
-def _list_sony_devices() -> list[dict]:
+def _enumerate() -> list[dict]:
+    if IS_WINDOWS:
+        return winhid.enumerate_devices(SONY_VID)
     if hid is None:
         return []
+    return hid.enumerate(SONY_VID, 0)
+
+
+def _list_sony_devices() -> list[dict]:
     found = []
     seen_paths = set()
-    for info in hid.enumerate(SONY_VID, 0):
+    for info in _enumerate():
         pid = info.get("product_id")
         if pid not in DS4_PIDS and pid not in DUALSENSE_PIDS:
             continue
@@ -276,12 +287,34 @@ def _list_sony_devices() -> list[dict]:
     return found
 
 
+class _HidapiDevice:
+    """Обёртка над hidapi с тем же интерфейсом, что у winhid.Device."""
+
+    def __init__(self, path):
+        if hasattr(hid, "device"):
+            self.dev = hid.device()
+            self.dev.open_path(path)
+            self._legacy = True
+        else:  # пакет "hid" вместо "hidapi"
+            self.dev = hid.Device(path=path)
+            self._legacy = False
+
+    def get_feature_report(self, report_id: int, length: int):
+        return self.dev.get_feature_report(report_id, length)
+
+    def read(self, timeout_ms: int) -> bytes:
+        if self._legacy:
+            return bytes(self.dev.read(128, timeout_ms))
+        return bytes(self.dev.read(128, timeout=timeout_ms) or b"")
+
+    def close(self):
+        self.dev.close()
+
+
 def _open(info: dict):
-    if hasattr(hid, "device"):
-        dev = hid.device()
-        dev.open_path(info["path"])
-        return dev
-    return hid.Device(path=info["path"])  # пакет "hid" вместо "hidapi"
+    if IS_WINDOWS:
+        return winhid.Device(info["path"])
+    return _HidapiDevice(info["path"])
 
 
 def _read_hid_device(info: dict, timeout: float = 1.5) -> BatteryInfo:
@@ -303,17 +336,13 @@ def _read_hid_device(info: dict, timeout: float = 1.5) -> BatteryInfo:
         # По Bluetooth геймпад шлёт урезанные отчёты, пока у него не запросят
         # feature-отчёт (0x02 для DS4, 0x05 для DualSense). На USB это безвредно.
         try:
-            if hasattr(dev, "get_feature_report"):
-                dev.get_feature_report(0x05 if is_ds else 0x02, 64 if is_ds else 37)
+            dev.get_feature_report(0x05 if is_ds else 0x02, 64 if is_ds else 37)
         except Exception:  # noqa: BLE001
             pass
 
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            if hasattr(dev, "set_nonblocking"):
-                data = dev.read(128, 200)  # hidapi: (размер, таймаут мс)
-            else:
-                data = dev.read(128, timeout=200)
+            data = dev.read(200)
             if not data:
                 continue
             parsed = parse_report(bytes(data), is_ds, bt)
@@ -358,6 +387,8 @@ def read_all() -> list[BatteryInfo]:
 
 def backend_problem() -> Optional[str]:
     """Сообщение о проблеме окружения или None, если всё в порядке."""
+    if IS_WINDOWS:
+        return None
     if sys.platform.startswith("linux") and os.path.isdir("/sys/class/power_supply"):
         return None
     if hid is None:
