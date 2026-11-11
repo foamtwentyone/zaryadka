@@ -1,3 +1,3 @@
 """Zaryadka — показывает уровень заряда геймпадов DualShock 4 / DualSense."""
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"

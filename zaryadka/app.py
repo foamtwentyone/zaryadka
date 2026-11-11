@@ -162,7 +162,7 @@ class App:
             self.cards, text=text, bg=CARD, fg=TEXT, wraplength=300,
             justify="left", padx=14, pady=14, font=("Segoe UI", 10),
         ).pack(fill="x", pady=4)
-        self.footer.config(text="")
+        self.footer.config(text=f"v{__version__}")
         self.root.title("Заряд геймпада")
 
     def _render(self, items: list[BatteryInfo]):
@@ -173,13 +173,15 @@ class App:
                 "Геймпад не найден.\nПодключите DualShock кабелем или по Bluetooth — "
                 "окно обновится само."
             )
-            self.footer.config(text=f"Обновлено {time.strftime('%H:%M:%S')}")
+            self.footer.config(text=f"Обновлено {time.strftime('%H:%M:%S')} · v{__version__}")
             return
 
         self._clear()
         for info in items:
             self._card(info)
-        self.footer.config(text=f"Обновлено {time.strftime('%H:%M:%S')} · каждые {REFRESH_MS // 1000} с")
+        self.footer.config(
+            text=f"Обновлено {time.strftime('%H:%M:%S')} · каждые {REFRESH_MS // 1000} с · v{__version__}"
+        )
 
         first = items[0]
         if first.level is not None:
